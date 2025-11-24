@@ -6,7 +6,8 @@ use App\Http\Controllers\{
     QuranController,
     ArtikelController,
     PengurusController,
-    TransparansiController
+    TransparansiController,
+    HadithController
 };
 use App\Http\Controllers\Admin\{
     AdminController,
@@ -95,4 +96,12 @@ Route::prefix('admin')
 
     Route::get("/login", [AuthController::class,"showLoginForm"])->name("login");
     Route::post("/login", [AuthController::class,"login"])->name("login.post");
+
+// routes/web.php
+Route::prefix('hadits')->name('hadith.')->group(function () {
+    Route::get('/', [HadithController::class, 'index'])->name('index');
+    Route::get('/buku/{book}', [HadithController::class, 'showHadiths'])->name('show');
+    Route::get('/cari', [HadithController::class, 'search'])->name('search');
+    Route::get('/buku/{book}/{number}', [HadithController::class, 'show'])->name('detail');
+});
 

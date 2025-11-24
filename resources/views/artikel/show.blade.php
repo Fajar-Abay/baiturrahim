@@ -334,10 +334,6 @@
                             <i class="bi bi-clock"></i>
                             <span>{{ $artikel->tanggal_posting->diffForHumans() }}</span>
                         </div>
-                        <div class="article-meta-item">
-                            <i class="bi bi-eye"></i>
-                            <span>1.2k Dilihat</span>
-                        </div>
                     </div>
                 </div>
             </div>
@@ -362,9 +358,6 @@
             <!-- Author Info -->
             <div class="author-card">
                 <div class="author-info">
-                    <img src="{{ asset('images/default-avatar.jpg') }}"
-                         alt="{{ $artikel->penulis ?? 'Admin Masjid' }}"
-                         class="author-avatar">
                     <div>
                         <h5 class="fw-bold text-success mb-2">{{ $artikel->penulis ?? 'Admin Masjid' }}</h5>
                         <p class="text-muted mb-2">Penulis artikel di Blog Masjid Al-Ikhlas. Berbagi ilmu dan inspirasi untuk kemajuan umat.</p>
@@ -412,13 +405,6 @@
             <!-- About Widget -->
             <div class="sidebar-widget">
                 <h4 class="widget-title">Tentang Penulis</h4>
-                <div class="text-center">
-                    <img src="{{ asset('images/default-avatar.jpg') }}"
-                         alt="{{ $artikel->penulis ?? 'Admin Masjid' }}"
-                         class="rounded-circle mb-3"
-                         width="80"
-                         height="80"
-                         style="object-fit: cover;">
                     <h6 class="fw-bold text-success">{{ $artikel->penulis ?? 'Admin Masjid' }}</h6>
                     <p class="text-muted small">
                         Penulis aktif di Blog Masjid Al-Ikhlas. Berbagi ilmu dan inspirasi melalui tulisan.

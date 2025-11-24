@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin;
 use Storage;
 use App\Models\Infaq;
 use App\Models\Artikel;
+use Spatie\Image\Image;
 use App\Models\Pengurus;
 use App\Models\Pengeluaran;
 use Illuminate\Support\Str;
@@ -18,7 +19,7 @@ class AdminController extends Controller
     /**
      * Dashboard utama admin
      */
-     public function dashboard()
+    public function dashboard()
     {
         // --- Statistik sederhana ---
         $totalInfaq = Infaq::where('status', 'sukses')->sum('nominal');
@@ -37,6 +38,7 @@ class AdminController extends Controller
 
         // --- Infaq & Pengeluaran Bulanan (bar chart) ---
         $infaqBulanan = Infaq::selectRaw('MONTH(created_at) as bulan, SUM(nominal) as total')
+                            ->where('status', 'sukses')
                             ->groupBy('bulan')
                             ->pluck('total','bulan')
                             ->map(fn($v)=>(float)$v)
@@ -67,16 +69,18 @@ class AdminController extends Controller
         ));
     }
 
-
     /**
      * Menampilkan profil masjid
      */
-   public function profileIndex()
+    public function profileIndex()
     {
-        $profile = ProfileMasjid::first(); // hanya 1 data saja
+        $profile = ProfileMasjid::first();
         return view('admin.profile.index', compact('profile'));
     }
 
+    /**
+     * Update profil masjid - METHOD YANG DIGUNAKAN
+     */
     public function profileUpdate(Request $request)
     {
         $request->validate([
@@ -89,44 +93,35 @@ class AdminController extends Controller
             'misi' => 'nullable|string',
             'koordinat_lat' => 'nullable|numeric',
             'koordinat_long' => 'nullable|numeric',
+            'id_kota' => 'nullable|integer', // tambahkan untuk jadwal sholat
         ]);
 
-        $profile = ProfileMasjid::first() ?? new ProfileMasjid();
-        $profile->fill($request->except('foto_logo'));
+        try {
+            $profile = ProfileMasjid::first() ?? new ProfileMasjid();
+            $profile->fill($request->except('foto_logo'));
 
-        if ($request->hasFile('foto_logo')) {
-            // hapus foto lama jika ada
-            if ($profile->foto_logo && Storage::exists($profile->foto_logo)) {
-                Storage::delete($profile->foto_logo);
+            if ($request->hasFile('foto_logo')) {
+                // hapus foto lama jika ada
+                if ($profile->foto_logo && Storage::exists($profile->foto_logo)) {
+                    Storage::delete($profile->foto_logo);
+                }
+
+                // simpan foto baru ke storage/public/logo
+                $path = $request->file('foto_logo')->store('logo', 'public');
+
+                // Optimasi gambar
+                $this->optimizeImage($path);
+
+                $profile->foto_logo = $path;
             }
 
-            // simpan foto baru ke storage/public/logo
-            $path = $request->file('foto_logo')->store('logo', 'public');
-            $profile->foto_logo = $path;
+            $profile->save();
+
+            return redirect()->back()->with('success', 'Profil masjid berhasil diperbarui!');
+
+        } catch (\Exception $e) {
+            return redirect()->back()->with('error', 'Terjadi kesalahan: ' . $e->getMessage());
         }
-
-        $profile->save();
-
-        return redirect()->back()->with('success', 'Profil masjid berhasil diperbarui!');
-    }
-
-    /**
-     * Update profil masjid
-     */
-    public function updateProfil(Request $request)
-    {
-        $request->validate([
-            'nama' => 'required|string|max:200',
-            'alamat' => 'nullable|string',
-            'deskripsi' => 'nullable|string',
-            'visi' => 'nullable|string',
-            'misi' => 'nullable|string',
-        ]);
-
-        $profil = ProfileMasjid::firstOrCreate(['id' => 1]);
-        $profil->update($request->all());
-
-        return redirect()->back()->with('success', 'Profil masjid berhasil diperbarui.');
     }
 
     /**
@@ -134,34 +129,29 @@ class AdminController extends Controller
      */
     public function jadwalSholat()
     {
-        // Ambil data masjid (lokasi)
         $profile = ProfileMasjid::first();
-
-        $id_kota = $profile->id_kota ?? 1217;
-
-        // Format tanggal hari ini
+        $id_kota = $profile->id_kota ?? 1217; // default Jakarta
         $tanggal = now()->format('Y-m-d');
 
         try {
-            // Panggil API MyQuran
             $response = Http::timeout(10)->get("https://api.myquran.com/v2/sholat/jadwal/{$id_kota}/{$tanggal}");
 
             if ($response->successful()) {
                 $data = $response->json();
-
-                // Pastikan struktur data sesuai
                 $jadwal = $data['data']['jadwal'] ?? null;
+                $kota = $data['data']['lokasi'] ?? null;
             } else {
                 $jadwal = null;
+                $kota = null;
             }
         } catch (\Throwable $e) {
-            // Tangani error jaringan atau JSON parsing
+            \Log::error('Error fetching prayer schedule: ' . $e->getMessage());
             $jadwal = null;
+            $kota = null;
         }
 
-        return view('admin.jadwal-sholat.index', compact('jadwal', 'profile'));
+        return view('admin.jadwal-sholat.index', compact('jadwal', 'profile', 'kota'));
     }
-
 
     /**
      * Menampilkan semua data infaq
@@ -187,37 +177,51 @@ class AdminController extends Controller
         return view('admin.infaq.index', compact('infaq'));
     }
 
-
-      public function infaqCreate()
+    public function infaqCreate()
     {
         return view('admin.infaq.create');
     }
 
     public function infaqStore(Request $request)
     {
+
         $request->validate([
             'nama_donatur' => 'required|string|max:150',
             'nominal' => 'required|numeric|min:1000',
             'metode' => 'required|in:online,offline',
-            'tanggal' => 'required|date',
             'catatan' => 'nullable|string',
-            'bukti_transfer' => 'required|image|mimes:jpg,jpeg,png|max:2048', // max 2MB
+            'bukti_transfer' => 'required|image|mimes:jpg,jpeg,png|max:10240',
         ]);
 
-        // Simpan bukti transfer
-        $fileName = time() . '_' . $request->file('bukti_transfer')->getClientOriginalName();
-        $path = $request->file('bukti_transfer')->storeAs('bukti_transfer', $fileName, 'public');
+        try {
+            $path = null;
+            if ($request->hasFile('bukti_transfer')) {
 
-        Infaq::create([
-            'nama_donatur' => $request->nama_donatur,
-            'nominal' => $request->nominal,
-            'metode' => $request->metode,
-            'status' => 'pending', // default
-            'catatan' => $request->catatan,
-            'bukti_transfer' => $path,
-        ]);
+                $fileName = time() . '_' . $request->file('bukti_transfer')->getClientOriginalName();
+                $path = $request->file('bukti_transfer')->storeAs('bukti_transfer', $fileName, 'public');
 
-        return redirect()->route('admin.infaq')->with('success', 'Data infaq berhasil ditambahkan dan menunggu konfirmasi.');
+                // Cek jika file benar-benar tersimpan
+                if (Storage::disk('public')->exists($path)) {
+                    $this->optimizeImage($path);
+                } else {
+                }
+            } else {
+            }
+
+            $infaqData = [
+                'nama_donatur' => $request->nama_donatur,
+                'nominal' => $request->nominal,
+                'metode' => $request->metode,
+                'status' => 'pending',
+                'catatan' => $request->catatan,
+                'bukti_transfer' => $path,
+            ];
+
+            return redirect()->route('admin.infaq')->with('success', 'Data infaq berhasil ditambahkan dan menunggu konfirmasi.');
+
+        } catch (\Exception $e) {
+            return redirect()->back()->with('error', 'Terjadi kesalahan: ' . $e->getMessage())->withInput();
+        }
     }
 
     public function updateStatus(Request $request, $id)
@@ -226,24 +230,33 @@ class AdminController extends Controller
             'status' => 'required|in:pending,sukses,gagal,dibatalkan',
         ]);
 
-        $infaq = Infaq::findOrFail($id);
-        $infaq->update(['status' => $request->status]);
+        try {
+            $infaq = Infaq::findOrFail($id);
+            $infaq->update(['status' => $request->status]);
 
-        return response()->json(['success' => true]);
+            return response()->json(['success' => true, 'message' => 'Status berhasil diperbarui']);
+
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => 'Terjadi kesalahan'], 500);
+        }
     }
-
 
     public function infaqDestroy($id)
     {
-        $infaq = Infaq::findOrFail($id);
+        try {
+            $infaq = Infaq::findOrFail($id);
 
-        // Hapus file bukti_transfer dari storage (jika ada)
-        if ($infaq->bukti_transfer && Storage::disk('public')->exists($infaq->bukti_transfer)) {
-            Storage::disk('public')->delete($infaq->bukti_transfer);
+            // Hapus file bukti_transfer dari storage (jika ada)
+            if ($infaq->bukti_transfer && Storage::disk('public')->exists($infaq->bukti_transfer)) {
+                Storage::disk('public')->delete($infaq->bukti_transfer);
+            }
+
+            $infaq->delete();
+            return back()->with('success', 'Data infaq berhasil dihapus.');
+
+        } catch (\Exception $e) {
+            return back()->with('error', 'Terjadi kesalahan: ' . $e->getMessage());
         }
-
-        $infaq->delete();
-        return back()->with('success', 'Data infaq berhasil dihapus.');
     }
 
     /**
@@ -251,23 +264,23 @@ class AdminController extends Controller
      */
     public function pengeluaranIndex(Request $request)
     {
-          $query = Pengeluaran::query();
+        $query = Pengeluaran::query();
 
-            if ($request->search) {
-                $query->where('deskripsi', 'like', '%' . $request->search . '%');
-            }
+        if ($request->search) {
+            $query->where('deskripsi', 'like', '%' . $request->search . '%');
+        }
 
-            if ($request->kategori) {
-                $query->where('kategori', $request->kategori);
-            }
+        if ($request->kategori) {
+            $query->where('kategori', $request->kategori);
+        }
 
-            if ($request->tanggal_mulai && $request->tanggal_akhir) {
-                $query->whereBetween('tanggal', [$request->tanggal_mulai, $request->tanggal_akhir]);
-            }
+        if ($request->tanggal_mulai && $request->tanggal_akhir) {
+            $query->whereBetween('tanggal', [$request->tanggal_mulai, $request->tanggal_akhir]);
+        }
 
-            $pengeluarans = $query->latest()->get();
+        $pengeluarans = $query->latest()->get();
 
-            return view('admin.pengeluaran.index', compact('pengeluarans'));
+        return view('admin.pengeluaran.index', compact('pengeluarans'));
     }
 
     public function pengeluaranCreate()
@@ -282,54 +295,61 @@ class AdminController extends Controller
             'kategori' => 'nullable|string|max:100',
             'nominal' => 'required|numeric',
             'tanggal' => 'required|date',
-            'bukti_pengeluaran' => 'nullable|image|mimes:jpg,jpeg,png|max:2048',
+            'bukti_pengeluaran' => 'nullable|image|mimes:jpg,jpeg,png|max:10240',
         ]);
 
-        $data = $request->only(['deskripsi', 'kategori', 'nominal', 'tanggal']);
+        try {
+            $data = $request->only(['deskripsi', 'kategori', 'nominal', 'tanggal']);
 
-        if ($request->hasFile('bukti_pengeluaran')) {
-            $file = $request->file('bukti_pengeluaran');
-            $path = $file->store('bukti_pengeluaran', 'public');
-            $data['bukti_pengeluaran'] = $path;
+            if ($request->hasFile('bukti_pengeluaran')) {
+                $fileName = time().'_'.$request->file('bukti_pengeluaran')->getClientOriginalName();
+                $path = $request->file('bukti_pengeluaran')->storeAs('bukti_pengeluaran', $fileName, 'public');
+                $this->optimizeImage($path);
+                $data['bukti_pengeluaran'] = $path;
+            }
+
+            Pengeluaran::create($data);
+
+            return redirect()->route('admin.pengeluaran')->with('success', 'Data pengeluaran berhasil ditambahkan.');
+
+        } catch (\Exception $e) {
+            return redirect()->back()->with('error', 'Terjadi kesalahan: ' . $e->getMessage())->withInput();
         }
-
-        Pengeluaran::create($data);
-
-        return redirect()->route('admin.pengeluaran')->with('success', 'Data pengeluaran berhasil ditambahkan.');
     }
 
     public function pengeluaranDestroy($id)
     {
-        $pengeluaran = Pengeluaran::findOrFail($id);
+        try {
+            $pengeluaran = Pengeluaran::findOrFail($id);
 
-        if ($pengeluaran->bukti_pengeluaran && file_exists(storage_path('app/public/' . $pengeluaran->bukti_pengeluaran))) {
-            unlink(storage_path('app/public/' . $pengeluaran->bukti_pengeluaran));
+            if ($pengeluaran->bukti_pengeluaran && Storage::disk('public')->exists($pengeluaran->bukti_pengeluaran)) {
+                Storage::disk('public')->delete($pengeluaran->bukti_pengeluaran);
+            }
+
+            $pengeluaran->delete();
+
+            return redirect()->route('admin.pengeluaran')->with('success', 'Data pengeluaran berhasil dihapus.');
+
+        } catch (\Exception $e) {
+            return redirect()->back()->with('error', 'Terjadi kesalahan: ' . $e->getMessage());
         }
-
-        $pengeluaran->delete();
-
-        return redirect()->route('admin.pengeluaran')->with('success', 'Data pengeluaran berhasil dihapus.');
     }
 
     /**
      * Menampilkan semua artikel
      */
-   // --- ARTIKEL ---
     public function artikelIndex(Request $request)
     {
         $query = Artikel::query();
 
-        // 🔍 Pencarian berdasarkan judul
         if ($request->filled('search')) {
             $query->where('judul', 'like', '%' . $request->search . '%');
         }
 
-        // 🏷️ Filter status
         if ($request->filled('status') && in_array($request->status, ['draft', 'publish'])) {
             $query->where('status', $request->status);
         }
 
-        // 📅 Sortir tanggal
         if ($request->filled('sort') && in_array($request->sort, ['baru', 'lama'])) {
             $order = $request->sort == 'baru' ? 'desc' : 'asc';
             $query->orderBy('tanggal_posting', $order);
@@ -353,24 +373,30 @@ class AdminController extends Controller
             'judul' => 'required|string|max:255',
             'isi' => 'required',
             'penulis' => 'nullable|string|max:100',
-            'foto_cover' => 'nullable|image|mimes:jpg,jpeg,png|max:2048',
+            'foto_cover' => 'nullable|image|mimes:jpg,jpeg,png|max:20480',
             'status' => 'required|in:draft,publish',
         ]);
 
-        $slug = Str::slug($request->judul);
-        $data = $request->only(['judul', 'isi', 'penulis', 'status']);
-        $data['slug'] = $slug;
-        $data['tanggal_posting'] = now();
+        try {
+            $slug = Str::slug($request->judul);
+            $data = $request->only(['judul', 'isi', 'penulis', 'status']);
+            $data['slug'] = $slug;
+            $data['tanggal_posting'] = now();
 
-        if ($request->hasFile('foto_cover')) {
-            $file = $request->file('foto_cover');
-            $path = $file->store('artikel', 'public');
-            $data['foto_cover'] = $path;
+            if ($request->hasFile('foto_cover')) {
+                $fileName = time() . '_' . $request->file('foto_cover')->getClientOriginalName();
+                $path = $request->file('foto_cover')->storeAs('artikel', $fileName, 'public');
+                $this->optimizeImage($path);
+                $data['foto_cover'] = $path;
+            }
+
+            Artikel::create($data);
+
+            return redirect()->route('admin.artikel')->with('success', 'Artikel berhasil ditambahkan.');
+
+        } catch (\Exception $e) {
+            return redirect()->back()->with('error', 'Terjadi kesalahan: ' . $e->getMessage())->withInput();
         }
-
-        Artikel::create($data);
-
-        return redirect()->route('admin.artikel')->with('success', 'Artikel berhasil ditambahkan.');
     }
 
     public function artikelEdit($id)
@@ -387,43 +413,57 @@ class AdminController extends Controller
             'judul' => 'required|string|max:255',
             'isi' => 'required',
             'penulis' => 'nullable|string|max:100',
-            'foto_cover' => 'nullable|image|mimes:jpg,jpeg,png|max:2048',
+            'foto_cover' => 'nullable|image|mimes:jpg,jpeg,png|max:20480',
             'status' => 'required|in:draft,publish',
         ]);
 
-        $data = $request->only(['judul', 'isi', 'penulis', 'status']);
-        $data['slug'] = Str::slug($request->judul);
+        try {
+            $data = $request->only(['judul', 'isi', 'penulis', 'status']);
+            $data['slug'] = Str::slug($request->judul);
 
-        if ($request->hasFile('foto_cover')) {
-            if ($artikel->foto_cover && file_exists(storage_path('app/public/' . $artikel->foto_cover))) {
-                unlink(storage_path('app/public/' . $artikel->foto_cover));
+            if ($request->hasFile('foto_cover')) {
+                // Hapus foto lama jika ada
+                if ($artikel->foto_cover && Storage::disk('public')->exists($artikel->foto_cover)) {
+                    Storage::disk('public')->delete($artikel->foto_cover);
+                }
+
+                $fileName = time() . '_' . $request->file('foto_cover')->getClientOriginalName();
+                $path = $request->file('foto_cover')->storeAs('artikel', $fileName, 'public');
+                $this->optimizeImage($path);
+                $data['foto_cover'] = $path;
             }
 
-            $path = $request->file('foto_cover')->store('artikel', 'public');
-            $data['foto_cover'] = $path;
+            $artikel->update($data);
+
+            return redirect()->route('admin.artikel')->with('success', 'Artikel berhasil diperbarui.');
+
+        } catch (\Exception $e) {
+            return redirect()->back()->with('error', 'Terjadi kesalahan: ' . $e->getMessage())->withInput();
         }
-
-        $artikel->update($data);
-
-        return redirect()->route('admin.artikel')->with('success', 'Artikel berhasil diperbarui.');
     }
 
     public function artikelDestroy($id)
     {
-        $artikel = Artikel::findOrFail($id);
+        try {
+            $artikel = Artikel::findOrFail($id);
 
-        if ($artikel->foto_cover && file_exists(storage_path('app/public/' . $artikel->foto_cover))) {
-            unlink(storage_path('app/public/' . $artikel->foto_cover));
+            if ($artikel->foto_cover && Storage::disk('public')->exists($artikel->foto_cover)) {
+                Storage::disk('public')->delete($artikel->foto_cover);
+            }
+
+            $artikel->delete();
+
+            return redirect()->route('admin.artikel')->with('success', 'Artikel berhasil dihapus.');
+
+        } catch (\Exception $e) {
+            return redirect()->back()->with('error', 'Terjadi kesalahan: ' . $e->getMessage());
         }
-
-        $artikel->delete();
-
-        return redirect()->route('admin.artikel')->with('success', 'Artikel berhasil dihapus.');
     }
 
-    // bagian pengurus
-
-        public function PengurusIndex()
+    /**
+     * Bagian pengurus
+     */
+    public function pengurusIndex()
     {
         $penguruses = Pengurus::latest()->get();
         return view('admin.pengurus.index', compact('penguruses'));
@@ -445,15 +485,23 @@ class AdminController extends Controller
             'foto' => 'nullable|image|mimes:jpg,jpeg,png|max:2048',
         ]);
 
-        $data = $request->all();
+        try {
+            $data = $request->all();
 
-        if ($request->hasFile('foto')) {
-            $data['foto'] = $request->file('foto')->store('pengurus', 'public');
+            if ($request->hasFile('foto')) {
+                $fileName = time() . '_' . $request->file('foto')->getClientOriginalName();
+                $path = $request->file('foto')->storeAs('pengurus', $fileName, 'public');
+                $this->optimizeImage($path);
+                $data['foto'] = $path;
+            }
+
+            Pengurus::create($data);
+
+            return redirect()->route('admin.pengurus.index')->with('success', 'Pengurus berhasil ditambahkan!');
+
+        } catch (\Exception $e) {
+            return redirect()->back()->with('error', 'Terjadi kesalahan: ' . $e->getMessage())->withInput();
         }
-
-        Pengurus::create($data);
-
-        return redirect()->route('admin.pengurus.index')->with('success', 'Pengurus berhasil ditambahkan!');
     }
 
     public function pengurusEdit(Pengurus $pengurus)
@@ -472,26 +520,62 @@ class AdminController extends Controller
             'foto' => 'nullable|image|mimes:jpg,jpeg,png|max:2048',
         ]);
 
-        $data = $request->all();
+        try {
+            $data = $request->all();
 
-        if ($request->hasFile('foto')) {
-            if ($pengurus->foto) {
-                Storage::disk('public')->delete($pengurus->foto);
+            if ($request->hasFile('foto')) {
+                // Hapus foto lama
+                if ($pengurus->foto && Storage::disk('public')->exists($pengurus->foto)) {
+                    Storage::disk('public')->delete($pengurus->foto);
+                }
+
+                $fileName = time() . '_' . $request->file('foto')->getClientOriginalName();
+                $path = $request->file('foto')->storeAs('pengurus', $fileName, 'public');
+                $this->optimizeImage($path);
+                $data['foto'] = $path;
             }
-            $data['foto'] = $request->file('foto')->store('pengurus', 'public');
+
+            $pengurus->update($data);
+
+            return redirect()->route('admin.pengurus.index')->with('success', 'Data pengurus berhasil diperbarui!');
+
+        } catch (\Exception $e) {
+            return redirect()->back()->with('error', 'Terjadi kesalahan: ' . $e->getMessage())->withInput();
         }
-
-        $pengurus->update($data);
-
-        return redirect()->route('admin.pengurus.index')->with('success', 'Data pengurus berhasil diperbarui!');
     }
 
     public function pengurusDestroy(Pengurus $pengurus)
     {
-        if ($pengurus->foto) {
-            Storage::disk('public')->delete($pengurus->foto);
+        try {
+            if ($pengurus->foto && Storage::disk('public')->exists($pengurus->foto)) {
+                Storage::disk('public')->delete($pengurus->foto);
+            }
+
+            $pengurus->delete();
+
+            return redirect()->route('admin.pengurus.index')->with('success', 'Data pengurus berhasil dihapus!');
+
+        } catch (\Exception $e) {
+            return redirect()->back()->with('error', 'Terjadi kesalahan: ' . $e->getMessage());
         }
-        $pengurus->delete();
-        return redirect()->route('admin.pengurus.index')->with('success', 'Data pengurus berhasil dihapus!');
+    }
+
+    /**
+     * Helper method untuk optimasi gambar
+     */
+    private function optimizeImage($path, $quality = 50)
+    {
+        try {
+            $fullPath = storage_path('app/public/' . $path);
+
+            if (file_exists($fullPath)) {
+                Image::load($fullPath)
+                    ->quality($quality)
+                    ->optimize()
+                    ->save();
+            }
+        } catch (\Exception $e) {
+            \Log::error('Error optimizing image: ' . $e->getMessage());
+        }
     }
 }

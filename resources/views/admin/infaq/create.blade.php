@@ -32,10 +32,6 @@
                         </select>
                     </div>
 
-                    <div class="col-md-6 mb-3">
-                        <label class="form-label">Tanggal</label>
-                        <input type="date" name="tanggal" class="form-control" required value="{{ date('Y-m-d') }}">
-                    </div>
                 </div>
 
                 <div class="mb-3">

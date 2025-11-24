@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ $title ?? 'Masjid Al-Ikhlas' }}</title>
+    <title>{{ $title ?? 'Masjid Baiturrahim' }}</title>
 
     <!-- Bootstrap -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -368,7 +368,7 @@
     <nav class="navbar navbar-expand-lg navbar-dark sticky-top">
         <div class="container">
             <a class="navbar-brand" href="{{ url('/') }}">
-                <i class="bi bi-house-heart"></i> Masjid Al-Ikhlas
+                <i class="bi bi-house-heart"></i> Masjid Baiturrahim
             </a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
                 <span class="navbar-toggler-icon"></span>
@@ -383,7 +383,7 @@
                         <a href="{{ url('/profil') }}" class="nav-link {{ request()->is('profil') ? 'active' : '' }}">Profil</a>
                     </li>
                     <li class="nav-item">
-                        <a href="{{ url('/artikel') }}" class="nav-link {{ request()->is('artikel') ? 'active' : '' }}">Artikel</a>
+                        <a href="{{ url('/artikel') }}" class="nav-link {{ request()->is('artikel*') ? 'active' : '' }}">Artikel</a>
                     </li>
                     <li class="nav-item">
                         <a href="{{ url('/pengurus') }}" class="nav-link {{ request()->is('pengurus') ? 'active' : '' }}">Pengurus</a>
@@ -393,6 +393,9 @@
                     </li>
                     <li class="nav-item">
                         <a href="{{ route('alquran.index') }}" class="nav-link {{ request()->is('alquran*') ? 'active' : '' }}">Al-Qur'an</a>
+                    </li>
+                    <li class="nav-item">
+                        <a href="{{ route('hadith.index') }}" class="nav-link {{ request()->is('hadith*') ? 'active' : '' }}">Hadits</a>
                     </li>
                 </ul>
             </div>
